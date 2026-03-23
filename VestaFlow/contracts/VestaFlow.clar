@@ -228,6 +228,66 @@
 )
 
 ;; ==========================================
+;; Advanced Feature: Revoke and Reallocate
+;; ==========================================
+;; This function allows an admin to revoke an existing vesting schedule
+;; that is marked as revocable, and immediately reallocate the remaining unvested 
+;; tokens to a new beneficiary. It calculates the currently vested amount, locks
+;; the old schedule, and generates a new vesting schedule for the new beneficiary
+;; continuing from the current block height.
+(define-public (revoke-and-reallocate 
+    (old-beneficiary principal) 
+    (new-beneficiary principal)
+)
+    (let (
+        ;; Retrieve the existing schedule
+        (schedule (unwrap! (map-get? vesting-schedules old-beneficiary) err-schedule-not-found))
+        (vested-amount (calculate-vested-amount schedule))
+        (total (get total-amount schedule))
+        (unvested (- total vested-amount))
+        (current-block block-height)
+        (elapsed-blocks (if (>= current-block (get start-block schedule))
+                            (- current-block (get start-block schedule))
+                            u0))
+        (remaining-duration (if (> (get duration schedule) elapsed-blocks) 
+                                (- (get duration schedule) elapsed-blocks) 
+                                u1))
+    )
+    ;; Perform security and validity checks
+    (try! (require-admin))
+    (try! (require-unpaused))
+    (asserts! (get revocable schedule) err-unauthorized)
+    (asserts! (not (get revoked schedule)) err-invalid-params)
+    (asserts! (is-none (map-get? vesting-schedules new-beneficiary)) err-schedule-exists)
+    (asserts! (> unvested u0) err-nothing-to-claim)
+    
+    ;; Revoke the old schedule, capping the total amount to what has already vested
+    (map-set vesting-schedules old-beneficiary 
+        (merge schedule {
+            revoked: true,
+            total-amount: vested-amount
+        })
+    )
+    
+    ;; Log event
+    (print {event: "schedule-revoked", beneficiary: old-beneficiary, unvested-reallocated: unvested})
+
+    ;; Reallocate unvested tokens to the new beneficiary
+    ;; The new schedule starts immediately with no cliff
+    (ok (map-set vesting-schedules new-beneficiary {
+        category: (get category schedule),
+        total-amount: unvested,
+        claimed-amount: u0,
+        start-block: current-block,
+        duration: remaining-duration,
+        cliff-duration: u0,
+        revocable: true,
+        revoked: false
+    }))
+    )
+)
+
+;; ==========================================
 ;; Read-Only Functions
 ;; ==========================================
 ;; Get the full schedule details for a beneficiary
